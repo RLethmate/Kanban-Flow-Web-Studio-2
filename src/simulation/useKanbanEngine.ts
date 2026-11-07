@@ -4,25 +4,28 @@ import { PRESETS } from './constants';
 
 export function useKanbanEngine() {
   const [selectedPresetId, setSelectedPresetId] = useState<string>('original');
-  const [wipLimit, setWipLimit] = useState<number>(10);
-  const [complexities, setComplexities] = useState<Record<number, number>>({ 1: 1, 3: 2, 5: 5 });
+  const [wipLimit, setWipLimitState] = useState<number>(10);
+  const [complexities, setComplexitiesState] = useState<Record<number, number>>({ 1: 1, 3: 2, 5: 5 });
   const [stochasticEnabled, setStochasticEnabled] = useState<boolean>(false);
   
   // Simulation playback state
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [tickSpeedMs, setTickSpeedMs] = useState<number>(350); // Speed in ms per simulated day
+  const [tickSpeedMs, setTickSpeedMsState] = useState<number>(350); // Speed in ms per simulated day
   const [dayCount, setDayCount] = useState<number>(0);
+  const dayCountRef = useRef<number>(0);
   const [roundCounter, setRoundCounter] = useState<number>(0);
+  const roundFinishedRef = useRef<boolean>(false);
   
   // Cards and queue state
   const [cards, setCards] = useState<KanbanCard[]>([]);
   const nextCardIdRef = useRef<number>(12);
-  const [columnMaxCounts, setColumnMaxCounts] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
+  const [columnMaxCounts, setColumnMaxCounts] = useState<number[]>([12, 0, 0, 0, 0, 0, 0, 0]);
   
-  // Red Card & Timing
+  // Red Card & Timing (tracked in accumulated active running ms so pause doesn't jump countdown)
   const [redCardGenerated, setRedCardGenerated] = useState<boolean>(false);
   const [redCardDueInSeconds, setRedCardDueInSeconds] = useState<number | null>(10);
-  const roundStartTimeRef = useRef<number | null>(null);
+  const accumulatedRunTimeMsRef = useRef<number>(0);
+  const lastActiveTimestampRef = useRef<number | null>(null);
   
   // Metrics & History
   const [roundHistory, setRoundHistory] = useState<RoundResult[]>([]);
@@ -30,11 +33,31 @@ export function useKanbanEngine() {
   const cfdHistoryRef = useRef<CfdSnapshot[]>([]);
   const [lastRoundResult, setLastRoundResult] = useState<RoundResult | null>(null);
 
-  // Initialize or reset board
-  const resetBoard = useCallback((newWip?: number, newComplexities?: Record<number, number>) => {
-    const activeWip = newWip !== undefined ? newWip : wipLimit;
-    const activeComp = newComplexities || complexities;
-    
+  // Safe Setters with Boundary Clamping
+  const setWipLimit = useCallback((val: number) => {
+    const clamped = Math.max(1, Math.min(50, isNaN(val) ? 10 : val));
+    setWipLimitState(clamped);
+  }, []);
+
+  const setTickSpeedMs = useCallback((ms: number) => {
+    const clamped = Math.max(40, Math.min(2000, isNaN(ms) ? 350 : ms));
+    setTickSpeedMsState(clamped);
+  }, []);
+
+  const setComplexities = useCallback((updater: Record<number, number> | ((prev: Record<number, number>) => Record<number, number>)) => {
+    setComplexitiesState((prev) => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      const sanitized: Record<number, number> = {};
+      for (const key of Object.keys(next)) {
+        const k = Number(key);
+        sanitized[k] = Math.max(1, Math.min(30, next[k] || 1));
+      }
+      return sanitized;
+    });
+  }, []);
+
+  // Central Initializer for Reset and New Round
+  const initBoard = useCallback((startImmediately: boolean, newWip?: number, newComp?: Record<number, number>) => {
     // Generate initial 12 cards in Backlog (col 0)
     const initialCards: KanbanCard[] = [];
     for (let i = 0; i < 12; i++) {
@@ -54,14 +77,20 @@ export function useKanbanEngine() {
         color: '#64748B',
       });
     }
-    
+
     nextCardIdRef.current = 12;
+    dayCountRef.current = 0;
+    roundFinishedRef.current = false;
+    accumulatedRunTimeMsRef.current = 0;
+    lastActiveTimestampRef.current = startImmediately ? Date.now() : null;
+
     setCards(initialCards);
     setDayCount(0);
     setRedCardGenerated(false);
     setRedCardDueInSeconds(10);
     setColumnMaxCounts([12, 0, 0, 0, 0, 0, 0, 0]);
-    const initialCfd = [
+
+    const initialCfd: CfdSnapshot[] = [
       {
         day: 0,
         backlog: 12,
@@ -77,24 +106,29 @@ export function useKanbanEngine() {
     ];
     setCfdHistory(initialCfd);
     cfdHistoryRef.current = initialCfd;
-    setIsRunning(false);
-    roundStartTimeRef.current = null;
-  }, [wipLimit, complexities]);
+    setIsRunning(startImmediately);
+
+    if (newWip !== undefined) setWipLimit(newWip);
+    if (newComp !== undefined) setComplexities(newComp);
+  }, [setWipLimit, setComplexities]);
+
+  // Public reset method
+  const resetBoard = useCallback((newWip?: number, newComplexities?: Record<number, number>) => {
+    initBoard(false, newWip, newComplexities);
+  }, [initBoard]);
 
   // Initial load
   useEffect(() => {
-    resetBoard();
-  }, []);
+    initBoard(false);
+  }, [initBoard]);
 
   // Apply a preset
   const applyPreset = useCallback((presetId: string) => {
     const preset = PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
     setSelectedPresetId(preset.id);
-    setWipLimit(preset.wipLimit);
-    setComplexities({ ...preset.complexities });
-    resetBoard(preset.wipLimit, preset.complexities);
-  }, [resetBoard]);
+    initBoard(false, preset.wipLimit, preset.complexities);
+  }, [initBoard]);
 
   // Manual generation of red card
   const generateRedCard = useCallback(() => {
@@ -156,7 +190,9 @@ export function useKanbanEngine() {
         backlogCards = updatedCards.filter((c) => c.col === 0);
       }
 
-      const nextDay = dayCount + 1;
+      const nextDay = dayCountRef.current + 1;
+      dayCountRef.current = nextDay;
+      setDayCount(nextDay);
 
       // 2. Flow Efficiency and Days on Board accounting for all cards in progress
       updatedCards = updatedCards.map((card) => {
@@ -252,7 +288,7 @@ export function useKanbanEngine() {
         const doneCard = col6Cards[0];
         updatedCards = updatedCards.map((c) => {
           if (c.birthId !== doneCard.birthId) return c;
-          const cycleTime = c.startDay > 0 ? (nextDay - c.startDay) : Math.max(1, c.daysOnBoard);
+          const cycleTime = c.startDay > 0 ? Math.max(1, nextDay - c.startDay) : Math.max(1, c.daysOnBoard);
           return {
             ...c,
             col: 7,
@@ -288,6 +324,7 @@ export function useKanbanEngine() {
         done: colCounts(7),
         inProgressTotal,
       };
+
       setCfdHistory((prevHistory) => {
         const next = [...prevHistory, snapshot];
         cfdHistoryRef.current = next;
@@ -296,43 +333,45 @@ export function useKanbanEngine() {
 
       // 7. Check if Red Card has reached Done (Spalte 7)
       const redCard = updatedCards.find((c) => c.isRed && c.col === 7);
-      if (redCard && isRunning) {
-        // Round Finished!
+      if (redCard && !roundFinishedRef.current) {
+        // Round Finished! Mark ref immediately so subsequent ticks or re-renders never duplicate
+        roundFinishedRef.current = true;
         setIsRunning(false);
-        const redCycle = redCard.cycleTime ?? (nextDay - redCard.startDay);
+
+        const redCycle = Math.max(1, redCard.cycleTime ?? (nextDay - redCard.startDay));
         const doneCount = updatedCards.filter((c) => c.col === 7).length;
         const throughput = redCycle > 0 ? Number((doneCount / redCycle).toFixed(2)) : 0;
         const totalEffTime = redCard.BZ + redCard.WZ;
         const flowEff = totalEffTime > 0 ? Number(((redCard.BZ / totalEffTime) * 100).toFixed(2)) : 0;
 
-        const newRound = roundCounter + 1;
-        setRoundCounter(newRound);
+        setRoundCounter((prevRound) => {
+          const newRound = prevRound + 1;
+          const currentCfd = [...cfdHistoryRef.current, snapshot];
+          const result: RoundResult = {
+            round: newRound,
+            wipLimit,
+            redCycleTime: redCycle,
+            flowEfficiency: flowEff,
+            inProgressCount: inProgressTotal,
+            doneCount,
+            throughput,
+            totalDays: nextDay,
+            redBZ: redCard.BZ,
+            redWZ: redCard.WZ,
+            timestamp: new Date().toLocaleTimeString(),
+            complexities: { ...complexities },
+            cfdData: currentCfd,
+          };
 
-        const currentCfd = [...cfdHistoryRef.current, snapshot];
-        const result: RoundResult = {
-          round: newRound,
-          wipLimit,
-          redCycleTime: redCycle,
-          flowEfficiency: flowEff,
-          inProgressCount: inProgressTotal,
-          doneCount,
-          throughput,
-          totalDays: nextDay,
-          redBZ: redCard.BZ,
-          redWZ: redCard.WZ,
-          timestamp: new Date().toLocaleTimeString(),
-          complexities: { ...complexities },
-          cfdData: currentCfd,
-        };
-
-        setLastRoundResult(result);
-        setRoundHistory((prev) => [result, ...prev]);
+          setLastRoundResult(result);
+          setRoundHistory((prev) => [result, ...prev]);
+          return newRound;
+        });
       }
 
-      setDayCount(nextDay);
       return updatedCards;
     });
-  }, [dayCount, complexities, stochasticEnabled, wipLimit, isGroupFull, isRunning, roundCounter]);
+  }, [complexities, stochasticEnabled, wipLimit, isGroupFull]);
 
   // Main simulation timer loop
   useEffect(() => {
@@ -343,41 +382,46 @@ export function useKanbanEngine() {
     return () => clearInterval(interval);
   }, [isRunning, tickSpeedMs, stepSimulation]);
 
-  // Red card automatic generator countdown timer (based on real time or virtual time)
+  // Active run time tracker: accumulates time only when running so Pause freezes the countdown
   useEffect(() => {
-    if (!isRunning || redCardGenerated) return;
-
-    if (roundStartTimeRef.current === null) {
-      roundStartTimeRef.current = Date.now();
+    if (!isRunning || redCardGenerated) {
+      lastActiveTimestampRef.current = null;
+      return;
     }
 
+    lastActiveTimestampRef.current = Date.now();
     const timer = setInterval(() => {
-      if (!roundStartTimeRef.current) return;
-      const elapsedSec = (Date.now() - roundStartTimeRef.current) / 1000;
-      const remaining = Math.max(0, 10 - elapsedSec);
-      setRedCardDueInSeconds(Math.ceil(remaining));
+      if (lastActiveTimestampRef.current === null) return;
+      const now = Date.now();
+      const delta = now - lastActiveTimestampRef.current;
+      lastActiveTimestampRef.current = now;
+      accumulatedRunTimeMsRef.current += delta;
 
-      if (remaining <= 0) {
+      const remainingSec = Math.max(0, 10 - accumulatedRunTimeMsRef.current / 1000);
+      setRedCardDueInSeconds(Math.ceil(remainingSec));
+
+      if (remainingSec <= 0) {
         generateRedCard();
         clearInterval(timer);
       }
-    }, 500);
+    }, 400);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      if (lastActiveTimestampRef.current !== null) {
+        accumulatedRunTimeMsRef.current += Date.now() - lastActiveTimestampRef.current;
+        lastActiveTimestampRef.current = null;
+      }
+    };
   }, [isRunning, redCardGenerated, generateRedCard]);
 
   // Actions
   const togglePlayPause = () => {
-    if (!isRunning && roundStartTimeRef.current === null) {
-      roundStartTimeRef.current = Date.now();
-    }
     setIsRunning((prev) => !prev);
   };
 
   const startNewRound = () => {
-    resetBoard();
-    setIsRunning(true);
-    roundStartTimeRef.current = Date.now();
+    initBoard(true);
   };
 
   const clearHistory = () => {

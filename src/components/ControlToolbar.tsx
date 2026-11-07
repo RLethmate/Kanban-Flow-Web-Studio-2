@@ -98,7 +98,7 @@ export const ControlToolbar: React.FC<ControlToolbarProps> = ({
             min={2}
             max={24}
             value={wipLimit}
-            onChange={(e) => onWipChange(parseInt(e.target.value))}
+            onChange={(e) => onWipChange(parseInt(e.target.value) || 10)}
             className="w-16 sm:w-20 accent-indigo-600 cursor-pointer"
           />
           <span className="text-[10px] text-slate-400 hidden sm:inline">
@@ -149,7 +149,11 @@ export const ControlToolbar: React.FC<ControlToolbarProps> = ({
             max={700}
             step={20}
             value={800 - tickSpeedMs} // Inverted so right is faster
-            onChange={(e) => onSpeedChange(800 - parseInt(e.target.value))}
+            onChange={(e) => {
+              const raw = parseInt(e.target.value);
+              const speedMs = isNaN(raw) ? 350 : 800 - raw;
+              onSpeedChange(Math.max(40, Math.min(760, speedMs)));
+            }}
             className="w-20 accent-indigo-600 cursor-pointer"
           />
           <span className="font-mono text-[11px] text-slate-500 w-10 text-right tabular-nums">

@@ -116,44 +116,52 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
     });
   }, [stackedData, maxDay, maxTotalCards]);
 
-  // Determine active measurement day for Little's Law triangle
-  const activeMeasDay = selectedDay !== null ? selectedDay : Math.max(1, Math.floor(activeData[activeData.length - 1].day * 0.55));
+  // Determine active measurement day for Little's Law triangle safely clamped to available data
+  const lastDataDay = activeData.length > 0 ? activeData[activeData.length - 1].day : 1;
+  const activeMeasDay = Math.min(
+    lastDataDay,
+    Math.max(1, selectedDay !== null && selectedDay <= lastDataDay ? selectedDay : Math.floor(lastDataDay * 0.55) || 1)
+  );
+
   const measSnapshotIndex = Math.min(
     stackedData.length - 1,
     Math.max(0, stackedData.findIndex((s) => s.day >= activeMeasDay))
   );
-  const measSnapshot = stackedData[measSnapshotIndex] || stackedData[stackedData.length - 1];
+  const measSnapshot = stackedData[measSnapshotIndex] || stackedData[stackedData.length - 1] || stackedData[0];
 
-  // Calculate Little's Law triangle geometry
-  const targetLevel = measSnapshot.points['schrittA'].y1; // top level of cards in system
-  const doneLevelAtMeas = measSnapshot.points['done'].y1; // current done height
-
-  const wipCards = Math.max(1, measSnapshot.raw.inProgressTotal);
+  // Calculate Little's Law triangle geometry with fallback safeguards
+  const targetLevel = measSnapshot?.points?.['schrittA']?.y1 ?? 12;
+  const doneLevelAtMeas = measSnapshot?.points?.['done']?.y1 ?? 0;
+  const wipCards = Math.max(1, measSnapshot?.raw?.inProgressTotal ?? 1);
 
   // Find future day where Done line crosses targetLevel (or approximate if simulation still running)
-  const finishSnapshot = stackedData.find((s) => s.day >= measSnapshot.day && s.points['done'].y1 >= targetLevel);
+  const finishSnapshot = stackedData.find((s) => s.day >= measSnapshot.day && s.points?.['done']?.y1 >= targetLevel);
   
   let finishDay = finishSnapshot ? finishSnapshot.day : null;
   let estimatedLeadTime = 0;
 
   if (finishDay !== null) {
-    estimatedLeadTime = finishDay - measSnapshot.day;
+    estimatedLeadTime = Math.max(1, finishDay - measSnapshot.day);
   } else {
     // Extrapolate based on recent throughput
-    const recentDoneRate = measSnapshot.day > 0 ? measSnapshot.raw.done / measSnapshot.day : 0.5;
-    const remainingToDone = targetLevel - doneLevelAtMeas;
-    estimatedLeadTime = recentDoneRate > 0 ? Math.round(remainingToDone / recentDoneRate) : 10;
+    const remainingToDone = Math.max(0, targetLevel - doneLevelAtMeas);
+    const recentDoneRate = (measSnapshot.day > 0 && measSnapshot.raw.done > 0)
+      ? measSnapshot.raw.done / measSnapshot.day
+      : 0.5;
+    const calcLead = recentDoneRate > 0 ? Math.round(remainingToDone / recentDoneRate) : 10;
+    estimatedLeadTime = Math.max(1, Math.min(100, isFinite(calcLead) ? calcLead : 10));
     finishDay = Math.min(maxDay, measSnapshot.day + estimatedLeadTime);
   }
 
-  estimatedLeadTime = Math.max(1, estimatedLeadTime);
-  const throughputRate = Number((wipCards / estimatedLeadTime).toFixed(2));
+  const rawThroughput = wipCards / Math.max(1, estimatedLeadTime);
+  const throughputRate = Number((isFinite(rawThroughput) ? rawThroughput : 0).toFixed(2));
 
   // Coordinates of the Little's Law Triangle
   const triX0 = getX(measSnapshot.day);
   const triYBottom = getY(doneLevelAtMeas);
   const triYTop = getY(targetLevel);
   const triX1 = getX(finishDay ?? (measSnapshot.day + estimatedLeadTime));
+  const isValidTriangle = isFinite(triX0) && isFinite(triYBottom) && isFinite(triYTop) && isFinite(triX1);
 
   // High WiP vs Low WiP comparison data (Variante C)
   const highWipRound = history.length >= 2 ? history.reduce((max, r) => (r.wipLimit > max.wipLimit ? r : max), history[0]) : null;
@@ -373,7 +381,7 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
           })}
 
           {/* ----------------- LITTLE'S LAW OVERLAY (VARIANTE C) ----------------- */}
-          {showLittlesLaw && (
+          {showLittlesLaw && isValidTriangle && (
             <g className="transition-all duration-300 pointer-events-none">
               {/* Shaded Triangle Polygon: (X0, YBottom) -> (X0, YTop) -> (X1, YTop) */}
               <polygon

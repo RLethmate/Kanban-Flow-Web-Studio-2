@@ -117,30 +117,34 @@ export const FlowInsights: React.FC<FlowInsightsProps> = ({ lastResult, history 
               </div>
 
               {/* Stacked bar */}
-              <div className="w-full bg-slate-200 h-6 rounded-md overflow-hidden flex font-mono text-[10px] font-bold text-white shadow-2xs">
-                {activeRound.redBZ > 0 && (
-                  <div
-                    className="bg-emerald-600 flex items-center justify-center transition-all"
-                    style={{
-                      width: `${(activeRound.redBZ / (activeRound.redBZ + activeRound.redWZ)) * 100}%`,
-                    }}
-                    title={`Bearbeitungszeit (BZ): ${activeRound.redBZ} Tage`}
-                  >
-                    BZ: {activeRound.redBZ}d ({((activeRound.redBZ / (activeRound.redBZ + activeRound.redWZ)) * 100).toFixed(0)}%)
+              {(() => {
+                const totalEffTime = activeRound.redBZ + activeRound.redWZ;
+                const bzRatio = totalEffTime > 0 ? (activeRound.redBZ / totalEffTime) * 100 : 0;
+                const wzRatio = totalEffTime > 0 ? (activeRound.redWZ / totalEffTime) * 100 : 0;
+
+                return (
+                  <div className="w-full bg-slate-200 h-6 rounded-md overflow-hidden flex font-mono text-[10px] font-bold text-white shadow-2xs">
+                    {activeRound.redBZ > 0 && (
+                      <div
+                        className="bg-emerald-600 flex items-center justify-center transition-all"
+                        style={{ width: `${bzRatio}%` }}
+                        title={`Bearbeitungszeit (BZ): ${activeRound.redBZ} Tage`}
+                      >
+                        BZ: {activeRound.redBZ}d ({bzRatio.toFixed(0)}%)
+                      </div>
+                    )}
+                    {activeRound.redWZ > 0 && (
+                      <div
+                        className="bg-amber-500 flex items-center justify-center transition-all"
+                        style={{ width: `${wzRatio}%` }}
+                        title={`Wartezeit (WZ): ${activeRound.redWZ} Tage`}
+                      >
+                        WZ: {activeRound.redWZ}d ({wzRatio.toFixed(0)}%)
+                      </div>
+                    )}
                   </div>
-                )}
-                {activeRound.redWZ > 0 && (
-                  <div
-                    className="bg-amber-500 flex items-center justify-center transition-all"
-                    style={{
-                      width: `${(activeRound.redWZ / (activeRound.redBZ + activeRound.redWZ)) * 100}%`,
-                    }}
-                    title={`Wartezeit (WZ): ${activeRound.redWZ} Tage`}
-                  >
-                    WZ: {activeRound.redWZ}d ({((activeRound.redWZ / (activeRound.redBZ + activeRound.redWZ)) * 100).toFixed(0)}%)
-                  </div>
-                )}
-              </div>
+                );
+              })()}
 
               <div className="flex flex-wrap items-center justify-between text-[10px] text-slate-500 mt-1.5">
                 <span className="flex items-center gap-1.5">
@@ -252,11 +256,13 @@ export const FlowInsights: React.FC<FlowInsightsProps> = ({ lastResult, history 
           <div className="mt-2.5 p-2 bg-white rounded border border-indigo-100 text-[10px] text-slate-700">
             <strong>Erkenntnis für Teams:</strong> Beim Wechsel von Runde {highestWipRound.round} (WiP {highestWipRound.wipLimit}) zu Runde {lowestWipRound.round} (WiP {lowestWipRound.wipLimit}) sank die Durchlaufzeit um{' '}
             <strong className="text-emerald-700">
-              {(
-                ((highestWipRound.redCycleTime - lowestWipRound.redCycleTime) /
-                  highestWipRound.redCycleTime) *
-                100
-              ).toFixed(0)}
+              {highestWipRound.redCycleTime > 0
+                ? (
+                    ((highestWipRound.redCycleTime - lowestWipRound.redCycleTime) /
+                      highestWipRound.redCycleTime) *
+                    100
+                  ).toFixed(0)
+                : '0'}
               %
             </strong>
             , weil fast die gesamte Wartezeit eliminiert wurde.
