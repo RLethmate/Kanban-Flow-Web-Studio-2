@@ -27,6 +27,7 @@ export function useKanbanEngine() {
   // Metrics & History
   const [roundHistory, setRoundHistory] = useState<RoundResult[]>([]);
   const [cfdHistory, setCfdHistory] = useState<CfdSnapshot[]>([]);
+  const cfdHistoryRef = useRef<CfdSnapshot[]>([]);
   const [lastRoundResult, setLastRoundResult] = useState<RoundResult | null>(null);
 
   // Initialize or reset board
@@ -60,7 +61,7 @@ export function useKanbanEngine() {
     setRedCardGenerated(false);
     setRedCardDueInSeconds(10);
     setColumnMaxCounts([12, 0, 0, 0, 0, 0, 0, 0]);
-    setCfdHistory([
+    const initialCfd = [
       {
         day: 0,
         backlog: 12,
@@ -73,7 +74,9 @@ export function useKanbanEngine() {
         done: 0,
         inProgressTotal: 0,
       },
-    ]);
+    ];
+    setCfdHistory(initialCfd);
+    cfdHistoryRef.current = initialCfd;
     setIsRunning(false);
     roundStartTimeRef.current = null;
   }, [wipLimit, complexities]);
@@ -285,7 +288,11 @@ export function useKanbanEngine() {
         done: colCounts(7),
         inProgressTotal,
       };
-      setCfdHistory((prevHistory) => [...prevHistory, snapshot]);
+      setCfdHistory((prevHistory) => {
+        const next = [...prevHistory, snapshot];
+        cfdHistoryRef.current = next;
+        return next;
+      });
 
       // 7. Check if Red Card has reached Done (Spalte 7)
       const redCard = updatedCards.find((c) => c.isRed && c.col === 7);
@@ -301,6 +308,7 @@ export function useKanbanEngine() {
         const newRound = roundCounter + 1;
         setRoundCounter(newRound);
 
+        const currentCfd = [...cfdHistoryRef.current, snapshot];
         const result: RoundResult = {
           round: newRound,
           wipLimit,
@@ -314,6 +322,7 @@ export function useKanbanEngine() {
           redWZ: redCard.WZ,
           timestamp: new Date().toLocaleTimeString(),
           complexities: { ...complexities },
+          cfdData: currentCfd,
         };
 
         setLastRoundResult(result);

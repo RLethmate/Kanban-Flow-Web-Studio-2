@@ -1,6 +1,7 @@
 import React from 'react';
 import { PRESETS } from '../simulation/constants';
 import { Play, RotateCcw, Award } from 'lucide-react';
+import logoImg from '../assets/logo.png';
 
 interface HeaderProps {
   roundCounter: number;
@@ -24,21 +25,14 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="border-b border-slate-200 bg-white shadow-2xs">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-1.5 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-        {/* Brand Zone */}
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-md bg-indigo-600 text-white flex items-center justify-center font-bold text-sm shadow-xs">
-            K
-          </div>
-          <div>
-            <div className="flex items-center gap-1.5">
-              <h1 className="text-sm font-bold text-slate-900 tracking-tight">
-                Kanban Flow Studio
-              </h1>
-              <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600">
-                it-agile
-              </span>
-            </div>
-          </div>
+        {/* Brand Zone: Official it-agile logo */}
+        <div className="flex items-center gap-2 shrink-0">
+          <img
+            src={logoImg}
+            alt="it-agile"
+            className="h-8 w-auto object-contain select-none"
+            title="it-agile"
+          />
         </div>
 
         {/* Center: Presets & Experiment Scenarios */}

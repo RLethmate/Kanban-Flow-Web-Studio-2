@@ -53,6 +53,7 @@ export interface RoundResult {
   timestamp: string;
   presetName?: string;
   complexities: Record<number, number>;
+  cfdData?: CfdSnapshot[];
 }
 
 export interface CfdSnapshot {

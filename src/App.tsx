@@ -123,7 +123,13 @@ export default function App() {
               <MetricsTable history={engine.roundHistory} onClear={engine.clearHistory} />
             )}
 
-            {activeTab === 'cfd' && <CumulativeFlowDiagram data={engine.cfdHistory} />}
+            {activeTab === 'cfd' && (
+              <CumulativeFlowDiagram
+                data={engine.cfdHistory}
+                history={engine.roundHistory}
+                wipLimit={engine.wipLimit}
+              />
+            )}
 
             {activeTab === 'delay' && <CostOfDelayChart history={engine.roundHistory} />}
 
