@@ -1,0 +1,8 @@
+{
+  "name": "Kanban Flow Studio",
+  "description": "Interaktive Kanban-Simulation und Flow-Analytics mit animiertem Board, CFD-Diagramm, Flusseffizienz und A/B-Rundenvergleich.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
