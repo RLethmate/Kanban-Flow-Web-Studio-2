@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { CfdSnapshot, RoundResult } from '../types/kanban';
-import { Info, Triangle, Layers, Sliders, CheckCircle2, MousePointerClick, Activity } from 'lucide-react';
+import { Info, Triangle, Layers, Sliders, CheckCircle2, MousePointerClick, Activity, Sparkles } from 'lucide-react';
 
 interface CumulativeFlowDiagramProps {
   data: CfdSnapshot[];
@@ -15,7 +15,7 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
 }) => {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const [showLittlesLaw, setShowLittlesLaw] = useState<boolean>(true);
-  
+
   // Selected round for CFD inspection (null = live simulation, number = round number)
   const [selectedRoundId, setSelectedRoundId] = useState<number | null>(null);
 
@@ -52,26 +52,6 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  const maxDay = Math.max(activeData[activeData.length - 1].day, 10);
-
-  // For CFD stacking: we stack Done -> Warten C -> Schritt C -> Warten B -> Schritt B -> Warten A -> Schritt A
-  const maxTotalCards = Math.max(
-    ...activeData.map(
-      (d) =>
-        d.done +
-        d.wartenC +
-        d.schrittC +
-        d.wartenB +
-        d.schrittB +
-        d.wartenA +
-        d.schrittA
-    ),
-    12
-  );
-
-  const getX = (day: number) => padding.left + (day / maxDay) * chartWidth;
-  const getY = (val: number) => height - padding.bottom - (val / (maxTotalCards * 1.1)) * chartHeight;
-
   // Stacking layers order (matching Kanban board columns)
   const layers = [
     { key: 'done', label: 'Done', color: '#10B981' }, // Emerald
@@ -97,6 +77,116 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
     });
   }, [activeData]);
 
+  // For CFD stacking: max total cards on board
+  const maxTotalCards = Math.max(
+    ...activeData.map(
+      (d) =>
+        d.done +
+        d.wartenC +
+        d.schrittC +
+        d.wartenB +
+        d.schrittB +
+        d.wartenA +
+        d.schrittA
+    ),
+    12
+  );
+
+  const lastDataDay = activeData.length > 0 ? activeData[activeData.length - 1].day : 1;
+  const lastRecordedDone = stackedData.length > 0 ? (stackedData[stackedData.length - 1].points?.['done']?.y1 ?? 0) : 0;
+
+  // Determine latest day where cumulative arrival cards have actually been finished into Done
+  const completedSnapshots = stackedData.filter(
+    (s) => (s.points?.['schrittA']?.y1 ?? 0) <= lastRecordedDone && s.day > 0
+  );
+  const maxCompletedDay = completedSnapshots.length > 0
+    ? completedSnapshots[completedSnapshots.length - 1].day
+    : 0;
+
+  // Determine active measurement day for Little's Law triangle safely clamped to available data
+  const activeMeasDay = Math.min(
+    lastDataDay,
+    Math.max(
+      1,
+      selectedDay !== null && selectedDay <= lastDataDay
+        ? selectedDay
+        : maxCompletedDay > 0
+        ? maxCompletedDay
+        : Math.floor(lastDataDay * 0.55) || 1
+    )
+  );
+
+  const measSnapshotIndex = Math.min(
+    stackedData.length - 1,
+    Math.max(0, stackedData.findIndex((s) => s.day >= activeMeasDay))
+  );
+  const measSnapshot = stackedData[measSnapshotIndex] || stackedData[stackedData.length - 1] || stackedData[0];
+
+  // Calculate Little's Law triangle geometry
+  const targetLevel = measSnapshot?.points?.['schrittA']?.y1 ?? 12;
+  const doneLevelAtMeas = measSnapshot?.points?.['done']?.y1 ?? 0;
+  const wipCards = Math.max(1, measSnapshot?.raw?.inProgressTotal ?? 1);
+
+  // Check if targetLevel has already reached Done in the recorded data (empirical finish)
+  const finishSnapshot = stackedData.find(
+    (s) => s.day >= measSnapshot.day && (s.points?.['done']?.y1 ?? 0) >= targetLevel
+  );
+  const isCompleted = finishSnapshot !== undefined && finishSnapshot !== null;
+
+  // Calculate empirical Throughput (Steigung der Done-Kurve) for extrapolation
+  let empiricalDoneRate = 0;
+  if (activeRoundObj && activeRoundObj.throughput > 0) {
+    empiricalDoneRate = activeRoundObj.throughput;
+  } else {
+    const firstDoneSnap = stackedData.find((s) => (s.points?.['done']?.y1 ?? 0) > 0);
+    if (firstDoneSnap && lastDataDay > firstDoneSnap.day) {
+      empiricalDoneRate = (lastRecordedDone - firstDoneSnap.points['done'].y1 + 1) / (lastDataDay - firstDoneSnap.day);
+    } else {
+      empiricalDoneRate = lastRecordedDone / Math.max(1, lastDataDay);
+    }
+  }
+  const safeDoneRate = Math.max(0.15, isFinite(empiricalDoneRate) && empiricalDoneRate > 0 ? Number(empiricalDoneRate.toFixed(2)) : 0.5);
+
+  // Extrapolate finish day based on remaining cards and previous slope
+  const remainingCardsToDone = Math.max(0.5, targetLevel - lastRecordedDone);
+  const extraDaysNeeded = Math.ceil(remainingCardsToDone / safeDoneRate);
+  const finishDayExtrapolated = lastDataDay + extraDaysNeeded;
+  const leadTimeExtrapolated = Math.max(1, finishDayExtrapolated - measSnapshot.day);
+  const throughputExtrapolated = Number((wipCards / leadTimeExtrapolated).toFixed(2));
+
+  // Determine effective finishDay and leadTime depending on completion
+  let finishDay: number | null = null;
+  let estimatedLeadTime = 0;
+  let throughputRate = 0;
+  let isExtrapolated = false;
+  let isValidTriangle = false;
+
+  if (isCompleted) {
+    finishDay = finishSnapshot.day;
+    estimatedLeadTime = Math.max(1, finishDay - measSnapshot.day);
+    const rawTp = wipCards / estimatedLeadTime;
+    throughputRate = Number((isFinite(rawTp) ? rawTp : 0).toFixed(2));
+    isExtrapolated = false;
+    isValidTriangle = true;
+  } else {
+    // For cards still in progress: always extrapolate forward using historical slope
+    finishDay = finishDayExtrapolated;
+    estimatedLeadTime = leadTimeExtrapolated;
+    throughputRate = throughputExtrapolated;
+    isExtrapolated = true;
+    isValidTriangle = isFinite(finishDay) && finishDay > measSnapshot.day;
+  }
+
+  // Dynamic Chart Max Day: extends beyond lastDataDay if extrapolation needs future canvas space
+  const chartMaxDay = Math.max(
+    lastDataDay,
+    isValidTriangle && isExtrapolated && finishDay ? finishDay + 2 : lastDataDay,
+    10
+  );
+
+  const getX = (day: number) => padding.left + (day / chartMaxDay) * chartWidth;
+  const getY = (val: number) => height - padding.bottom - (val / (maxTotalCards * 1.1)) * chartHeight;
+
   // Generate SVG polygon paths for each layer
   const areaPaths = useMemo(() => {
     return layers.map((layer) => {
@@ -107,54 +197,13 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
       const pathString = `M ${topPoints.join(' L ')} L ${bottomPoints.join(' L ')} Z`;
       return { ...layer, pathString };
     });
-  }, [stackedData, maxDay, maxTotalCards]);
-
-  // Determine active measurement day for Little's Law triangle safely clamped to available data
-  const lastDataDay = activeData.length > 0 ? activeData[activeData.length - 1].day : 1;
-  const activeMeasDay = Math.min(
-    lastDataDay,
-    Math.max(1, selectedDay !== null && selectedDay <= lastDataDay ? selectedDay : Math.floor(lastDataDay * 0.55) || 1)
-  );
-
-  const measSnapshotIndex = Math.min(
-    stackedData.length - 1,
-    Math.max(0, stackedData.findIndex((s) => s.day >= activeMeasDay))
-  );
-  const measSnapshot = stackedData[measSnapshotIndex] || stackedData[stackedData.length - 1] || stackedData[0];
-
-  // Calculate Little's Law triangle geometry with fallback safeguards
-  const targetLevel = measSnapshot?.points?.['schrittA']?.y1 ?? 12;
-  const doneLevelAtMeas = measSnapshot?.points?.['done']?.y1 ?? 0;
-  const wipCards = Math.max(1, measSnapshot?.raw?.inProgressTotal ?? 1);
-
-  // Find future day where Done line crosses targetLevel (or approximate if simulation still running)
-  const finishSnapshot = stackedData.find((s) => s.day >= measSnapshot.day && s.points?.['done']?.y1 >= targetLevel);
-  
-  let finishDay = finishSnapshot ? finishSnapshot.day : null;
-  let estimatedLeadTime = 0;
-
-  if (finishDay !== null) {
-    estimatedLeadTime = Math.max(1, finishDay - measSnapshot.day);
-  } else {
-    // Extrapolate based on recent throughput
-    const remainingToDone = Math.max(0, targetLevel - doneLevelAtMeas);
-    const recentDoneRate = (measSnapshot.day > 0 && measSnapshot.raw.done > 0)
-      ? measSnapshot.raw.done / measSnapshot.day
-      : 0.5;
-    const calcLead = recentDoneRate > 0 ? Math.round(remainingToDone / recentDoneRate) : 10;
-    estimatedLeadTime = Math.max(1, Math.min(100, isFinite(calcLead) ? calcLead : 10));
-    finishDay = Math.min(maxDay, measSnapshot.day + estimatedLeadTime);
-  }
-
-  const rawThroughput = wipCards / Math.max(1, estimatedLeadTime);
-  const throughputRate = Number((isFinite(rawThroughput) ? rawThroughput : 0).toFixed(2));
+  }, [stackedData, chartMaxDay, maxTotalCards]);
 
   // Coordinates of the Little's Law Triangle
   const triX0 = getX(measSnapshot.day);
   const triYBottom = getY(doneLevelAtMeas);
   const triYTop = getY(targetLevel);
-  const triX1 = getX(finishDay ?? (measSnapshot.day + estimatedLeadTime));
-  const isValidTriangle = isFinite(triX0) && isFinite(triYBottom) && isFinite(triYTop) && isFinite(triX1);
+  const triX1 = finishDay !== null ? getX(finishDay) : triX0;
 
   // High WiP vs Low WiP comparison data (Variante C)
   const highWipRound = history.length >= 2 ? history.reduce((max, r) => (r.wipLimit > max.wipLimit ? r : max), history[0]) : null;
@@ -240,38 +289,69 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
       {/* Little's Law Measurement Bar (when Overlay is active) */}
       {showLittlesLaw && (
         <div className="p-2.5 bg-indigo-50/70 border border-indigo-200/90 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <span className="font-bold text-indigo-950 flex items-center gap-1">
               <Triangle className="w-3.5 h-3.5 text-indigo-600 fill-indigo-600" />
-              Messung an Tag {measSnapshot.day}:
+              Messung Tag {measSnapshot.day}:
             </span>
+
+            {/* Status Badge */}
+            {isCompleted ? (
+              <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200">
+                <CheckCircle2 className="w-2.5 h-2.5" />
+                Abgeschlossen (gemessen)
+              </span>
+            ) : (
+              <span className="bg-purple-100 text-purple-900 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 border border-purple-200">
+                <Sparkles className="w-2.5 h-2.5 text-purple-600" />
+                Prognose (Extrapolation ~{safeDoneRate} K/d)
+              </span>
+            )}
+
+            {/* Values */}
             <div className="flex items-center gap-2 font-mono text-[11px]">
               <span className="bg-white px-2 py-0.5 rounded border border-indigo-200 text-indigo-900 font-bold">
                 WiP (Δy): {wipCards} Karten
               </span>
               <span className="text-slate-400">·</span>
               <span className="bg-white px-2 py-0.5 rounded border border-indigo-200 text-cyan-900 font-bold">
-                Lead Time (Δx): {estimatedLeadTime}d
+                Lead Time (Δx): {isExtrapolated ? '~' : ''}{estimatedLeadTime}d {isExtrapolated && '(Prognose)'}
               </span>
               <span className="text-slate-400">·</span>
               <span className="bg-white px-2 py-0.5 rounded border border-indigo-200 text-emerald-900 font-bold">
-                Durchsatz (m): {throughputRate} K/d
+                Durchsatz (m): {isExtrapolated ? '~' : ''}{throughputRate} K/d
               </span>
             </div>
           </div>
 
-          {/* Interactive Day Slider to move the triangle */}
-          <div className="flex items-center gap-2">
-            <Sliders className="w-3.5 h-3.5 text-indigo-600" />
-            <span className="text-[11px] text-indigo-900 font-medium">Tag wählen:</span>
-            <input
-              type="range"
-              min={1}
-              max={Math.max(1, activeData[activeData.length - 1].day)}
-              value={activeMeasDay}
-              onChange={(e) => setSelectedDay(parseInt(e.target.value))}
-              className="w-24 sm:w-36 accent-indigo-600 cursor-pointer"
-            />
+          {/* Right side controls: Day Slider & Jump Button */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {maxCompletedDay > 0 && activeMeasDay !== maxCompletedDay && (
+              <button
+                type="button"
+                onClick={() => setSelectedDay(maxCompletedDay)}
+                className="px-2 py-1 rounded bg-white border border-indigo-200 hover:bg-indigo-100/60 text-[11px] font-semibold text-indigo-900 cursor-pointer flex items-center gap-1 transition-colors shadow-2xs"
+                title={`Springe zu Tag ${maxCompletedDay}, an dem alle Karten bereits in Done angekommen sind`}
+              >
+                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                Zu Tag {maxCompletedDay} (voll gemessen)
+              </button>
+            )}
+
+            <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-lg border border-indigo-200">
+              <Sliders className="w-3.5 h-3.5 text-indigo-600" />
+              <span className="text-[11px] text-indigo-950 font-semibold font-mono">
+                Tag {activeMeasDay}
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={Math.max(1, lastDataDay)}
+                value={activeMeasDay}
+                onChange={(e) => setSelectedDay(parseInt(e.target.value))}
+                className="w-20 sm:w-28 accent-indigo-600 cursor-pointer"
+              />
+            </div>
           </div>
         </div>
       )}
@@ -288,8 +368,8 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
             const clickX = e.clientX - rect.left;
             const normalizedX = (clickX / rect.width) * width;
             if (normalizedX >= padding.left && normalizedX <= width - padding.right) {
-              const day = Math.round(((normalizedX - padding.left) / chartWidth) * maxDay);
-              setSelectedDay(Math.max(1, Math.min(activeData[activeData.length - 1].day, day)));
+              const day = Math.round(((normalizedX - padding.left) / chartWidth) * chartMaxDay);
+              setSelectedDay(Math.max(1, Math.min(lastDataDay, day)));
             }
           }}
         >
@@ -327,6 +407,45 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
             );
           })}
 
+          {/* Forecast Zone Background & Divider (when chartMaxDay > lastDataDay) */}
+          {chartMaxDay > lastDataDay && (
+            <g className="pointer-events-none">
+              <rect
+                x={getX(lastDataDay)}
+                y={padding.top}
+                width={chartWidth - (getX(lastDataDay) - padding.left)}
+                height={chartHeight}
+                fill="#F8FAFC"
+                opacity="0.8"
+              />
+              <line
+                x1={getX(lastDataDay)}
+                y1={padding.top}
+                x2={getX(lastDataDay)}
+                y2={height - padding.bottom}
+                stroke="#64748B"
+                strokeWidth="1.5"
+                strokeDasharray="3 3"
+              />
+              <text
+                x={getX(lastDataDay) - 5}
+                y={padding.top + 11}
+                textAnchor="end"
+                className="fill-slate-500 font-mono text-[9px] font-bold"
+              >
+                Tag {lastDataDay} (Daten)
+              </text>
+              <text
+                x={getX(lastDataDay) + 5}
+                y={padding.top + 11}
+                textAnchor="start"
+                className="fill-indigo-600 font-mono text-[9px] font-bold"
+              >
+                Prognose-Bereich
+              </text>
+            </g>
+          )}
+
           {/* Area Polygons */}
           {areaPaths.map((layer) => (
             <path
@@ -337,6 +456,36 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
               className="transition-opacity hover:opacity-100"
             />
           ))}
+
+          {/* Extrapolated Done Trendline (when isExtrapolated && isValidTriangle) */}
+          {showLittlesLaw && isExtrapolated && isValidTriangle && finishDay && (
+            <g className="pointer-events-none">
+              <line
+                x1={getX(lastDataDay)}
+                y1={getY(lastRecordedDone)}
+                x2={getX(finishDay)}
+                y2={getY(targetLevel)}
+                stroke="#10B981"
+                strokeWidth="2.5"
+                strokeDasharray="5 3"
+              />
+              <circle
+                cx={getX(finishDay)}
+                cy={getY(targetLevel)}
+                r="4.5"
+                fill="#10B981"
+                stroke="#FFFFFF"
+                strokeWidth="2"
+              />
+              <text
+                x={Math.min(width - padding.right - 10, getX(finishDay) + 6)}
+                y={getY(targetLevel) + 3}
+                className="fill-emerald-800 font-mono text-[9px] font-bold"
+              >
+                Done ~Tag {finishDay}
+              </text>
+            </g>
+          )}
 
           {/* X Axis */}
           <line
@@ -350,8 +499,9 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
 
           {/* X Axis Ticks */}
           {Array.from({ length: 6 }).map((_, i) => {
-            const dayStep = Math.round((maxDay / 5) * i);
+            const dayStep = Math.round((chartMaxDay / 5) * i);
             const x = getX(dayStep);
+            const isForecastTick = dayStep > lastDataDay;
             return (
               <g key={i}>
                 <line
@@ -359,13 +509,15 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
                   y1={height - padding.bottom}
                   x2={x}
                   y2={height - padding.bottom + 5}
-                  stroke="#94A3B8"
+                  stroke={isForecastTick ? '#818CF8' : '#94A3B8'}
                 />
                 <text
                   x={x}
                   y={height - padding.bottom + 16}
                   textAnchor="middle"
-                  className="fill-slate-500 font-mono text-[9px]"
+                  className={`font-mono text-[9px] ${
+                    isForecastTick ? 'fill-indigo-600 font-semibold italic' : 'fill-slate-500'
+                  }`}
                 >
                   Tag {dayStep}
                 </text>
@@ -380,9 +532,10 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
               <polygon
                 points={`${triX0},${triYBottom} ${triX0},${triYTop} ${triX1},${triYTop}`}
                 fill="url(#triangleGrad)"
-                stroke="#4F46E5"
+                stroke={isExtrapolated ? '#6366F1' : '#4F46E5'}
                 strokeWidth="1.5"
-                strokeDasharray="4 2"
+                strokeDasharray={isExtrapolated ? '4 3' : '4 2'}
+                opacity={isExtrapolated ? '0.8' : '1'}
               />
 
               {/* Hypotenuse (Steigung = Durchsatz): from (X0, YBottom) to (X1, YTop) */}
@@ -393,6 +546,7 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
                 y2={triYTop}
                 stroke="#10B981"
                 strokeWidth="2.5"
+                strokeDasharray={isExtrapolated ? '5 3' : undefined}
               />
 
               {/* Vertikale Kathete (WIP Δy) */}
@@ -413,6 +567,7 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
                 y2={triYTop}
                 stroke="#0284C7"
                 strokeWidth="3"
+                strokeDasharray={isExtrapolated ? '5 3' : undefined}
               />
 
               {/* Badges on the triangle */}
@@ -441,9 +596,9 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
               {/* Horizontal Lead Time Badge */}
               <g transform={`translate(${(triX0 + triX1) / 2}, ${triYTop - 12})`}>
                 <rect
-                  x="-45"
+                  x="-55"
                   y="-10"
-                  width="90"
+                  width="110"
                   height="20"
                   rx="4"
                   fill="#082F49"
@@ -456,16 +611,16 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
                   fill="#38BDF8"
                   className="font-mono text-[9px] font-bold"
                 >
-                  Lead: {estimatedLeadTime}d
+                  Lead: {isExtrapolated ? '~' : ''}{estimatedLeadTime}d {isExtrapolated ? '(Prog.)' : ''}
                 </text>
               </g>
 
               {/* Hypotenuse / Slope Badge */}
               <g transform={`translate(${(triX0 + triX1) / 2 + 10}, ${(triYBottom + triYTop) / 2 + 10})`}>
                 <rect
-                  x="-55"
+                  x="-65"
                   y="-10"
-                  width="110"
+                  width="130"
                   height="20"
                   rx="4"
                   fill="#064E3B"
@@ -478,7 +633,7 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
                   fill="#6EE7B7"
                   className="font-mono text-[9px] font-bold"
                 >
-                  m = {throughputRate} K/d
+                  m {isExtrapolated ? '≈' : '='} {throughputRate} K/d {isExtrapolated ? '(Prog.)' : ''}
                 </text>
               </g>
             </g>
@@ -552,6 +707,46 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
           </div>
         )}
       </div>
+
+      {/* Erklärtext zur Durchlaufzeit & Little's Law direkt unter dem CFD */}
+      {showLittlesLaw && (
+        <div
+          className={`p-2.5 rounded-lg border text-xs flex flex-wrap items-center justify-between gap-2.5 ${
+            isCompleted
+              ? 'bg-emerald-50/70 border-emerald-200/90 text-emerald-950'
+              : 'bg-purple-50/70 border-purple-200/90 text-purple-950'
+          }`}
+        >
+          <div className="flex items-start sm:items-center gap-2 flex-1">
+            {isCompleted ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
+            ) : (
+              <Sparkles className="w-4 h-4 text-purple-600 shrink-0 mt-0.5 sm:mt-0" />
+            )}
+            <div className="leading-relaxed">
+              {isCompleted ? (
+                <span>
+                  <strong>Gemessene Durchlaufzeit für Tag {activeMeasDay}:</strong> Alle {targetLevel} Karten, die bis Tag {activeMeasDay} gestartet wurden, haben an Tag {finishDay} die Spalte Done erreicht. Das durchgezogene Dreieck zeigt die real gemessene Durchlaufzeit von <strong>{estimatedLeadTime} Tagen</strong> bei einem Durchsatz von <strong>{throughputRate} K/d</strong>.
+                </span>
+              ) : (
+                <span>
+                  <strong>Extrapolierte Prognose für Tag {activeMeasDay}:</strong> An Tag {activeMeasDay} waren {wipCards} Karten im System. Da diese bis Tag {lastDataDay} noch nicht alle in Done angekommen sind ({lastRecordedDone} von {targetLevel} Karten erledigt), wird das Dreieck gestrichelt weitergeführt: Bei der bisherigen Done-Steigung von ~{safeDoneRate} Karten/Tag wird die Fertigstellung voraussichtlich an <strong>Tag ~{finishDay}</strong> erreicht (prognostizierte DLZ: ~{estimatedLeadTime} Tage).
+                </span>
+              )}
+            </div>
+          </div>
+
+          {!isCompleted && maxCompletedDay > 0 && activeMeasDay !== maxCompletedDay && (
+            <button
+              onClick={() => setSelectedDay(maxCompletedDay)}
+              className="px-2.5 py-1 rounded bg-white border border-purple-200 hover:bg-purple-100/70 text-[11px] font-semibold text-purple-900 cursor-pointer flex items-center gap-1 transition-colors shadow-2xs shrink-0 self-start sm:self-auto"
+            >
+              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+              Zu Tag {maxCompletedDay} (voll gemessen)
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Variante C: A/B Little's Law Comparison Card & CLICKABLE ROUND SWITCHERS */}
       {showLittlesLaw && (
