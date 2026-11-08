@@ -7,6 +7,7 @@ import { MetricsTable } from './components/MetricsTable';
 import { CumulativeFlowDiagram } from './components/CumulativeFlowDiagram';
 import { CostOfDelayChart } from './components/CostOfDelayChart';
 import { FlowInsights } from './components/FlowInsights';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Table, LineChart, BarChart2, Lightbulb } from 'lucide-react';
 
 export default function App() {
@@ -117,29 +118,31 @@ export default function App() {
             </div>
           </div>
 
-          {/* Active Tab View */}
+        {/* Active Tab View */}
           <div className="pt-1">
-            {activeTab === 'table' && (
-              <MetricsTable history={engine.roundHistory} onClear={engine.clearHistory} />
-            )}
+            <ErrorBoundary fallbackMessage="Die CFD-Ansicht wird neu initialisiert...">
+              {activeTab === 'table' && (
+                <MetricsTable history={engine.roundHistory} onClear={engine.clearHistory} />
+              )}
 
-            {activeTab === 'cfd' && (
-              <CumulativeFlowDiagram
-                data={engine.cfdHistory}
-                history={engine.roundHistory}
-                wipLimit={engine.wipLimit}
-              />
-            )}
+              {activeTab === 'cfd' && (
+                <CumulativeFlowDiagram
+                  data={engine.cfdHistory}
+                  history={engine.roundHistory}
+                  wipLimit={engine.wipLimit}
+                />
+              )}
 
-            {activeTab === 'delay' && <CostOfDelayChart history={engine.roundHistory} />}
+              {activeTab === 'delay' && <CostOfDelayChart history={engine.roundHistory} />}
 
-            {activeTab === 'insights' && (
-              <FlowInsights
-                lastResult={engine.lastRoundResult}
-                history={engine.roundHistory}
-                wipLimit={engine.wipLimit}
-              />
-            )}
+              {activeTab === 'insights' && (
+                <FlowInsights
+                  lastResult={engine.lastRoundResult}
+                  history={engine.roundHistory}
+                  wipLimit={engine.wipLimit}
+                />
+              )}
+            </ErrorBoundary>
           </div>
         </section>
       </main>

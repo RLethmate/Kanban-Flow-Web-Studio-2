@@ -19,13 +19,6 @@ export const CumulativeFlowDiagram: React.FC<CumulativeFlowDiagramProps> = ({
   // Selected round for CFD inspection (null = live simulation, number = round number)
   const [selectedRoundId, setSelectedRoundId] = useState<number | null>(null);
 
-  // If new rounds are completed, default to showing the latest completed round if current simulation is at day 0
-  useEffect(() => {
-    if (data.length <= 1 && history.length > 0 && selectedRoundId === null) {
-      setSelectedRoundId(history[0].round);
-    }
-  }, [data.length, history, selectedRoundId]);
-
   // Determine active CFD dataset
   const activeRoundObj = selectedRoundId !== null ? history.find((r) => r.round === selectedRoundId) : null;
   const activeData: CfdSnapshot[] =
